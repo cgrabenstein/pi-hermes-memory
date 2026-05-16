@@ -120,37 +120,89 @@ THREE TARGETS:
 
 ACTIONS: add (new entry), replace (update existing -- old_text identifies it), remove (delete -- old_text identifies it).`;
 
-// ─── Background review prompt (ported from _COMBINED_REVIEW_PROMPT in run_agent.py ~L2855) ───
-export const COMBINED_REVIEW_PROMPT = `Review the conversation above and consider these aspects:
+// ─── Background review / session extraction prompt ───
+// Adapted from pi-memory's consolidation philosophy:
+//   - Extract only durable, non-obvious facts
+//   - Avoid anything derivable from the current project state
+//   - Prefer quality over quantity — one good entry beats five vague ones
+//
+// Key principle: if the agent can discover it by reading files, grepping,
+// or checking git history, it doesn't belong in persistent memory.
+export const COMBINED_REVIEW_PROMPT = `Review the conversation and extract only what's genuinely worth remembering.
 
-**Memory**: Has the user revealed things about themselves — their persona, desires, preferences, or personal details? Has the user expressed expectations about how you should behave, their work style, or ways they want you to operate? If so, save using the memory tool.
+## What to save (use the memory tool with appropriate target/category):
 
-**Failures & Corrections**: Did anything fail or go wrong? Extract these as failure memories:
-- [failure] What was tried but didn't work? (e.g., "Used localStorage for tokens — XSS vulnerability")
-- [correction] Did the user correct you? (e.g., "Use pnpm, not npm")
-- [insight] What was learned from the experience?
-- [convention] Any project conventions discovered?
-- [tool-quirk] Any tool-specific knowledge gained?
+**User preferences** (target: memory, or memory tool add) — coding style, tool preferences, workflow habits
+  - e.g. "Prefers pnpm over npm, conventional commits"
+  - Only if explicitly stated or consistently demonstrated
 
-For failures, include: what was tried, why it failed, what error occurred, and what worked instead.
+**Corrections that stuck** (target: failure, category: correction) — things you got wrong and the user fixed
+  - e.g. "Use sed for daily note insertion, not echo >>"
+  - Include both what went wrong and what to do instead
 
-**Skills**: Was a complex, non-trivial approach used to complete a task — one that required trial and error, multiple tool calls, or changing course? If so, save a reusable procedure using the skill tool with action 'create'. Always pass scope explicitly on create (scope='global' or scope='project'). Choose scope='global' for transferable procedures and scope='project' when the workflow depends on this repo's paths, scripts, architecture, deploy steps, or conventions. Include: when to use it, step-by-step procedure, pitfalls to avoid, and how to verify success. If a related skill already exists, use action 'patch' with its skill_id instead of creating a duplicate.
+**Non-obvious gotchas** (target: failure, category: tool-quirk) — surprising tool behavior that wasted time
+  - e.g. "SQLite FTS5 wraps phrases in double quotes — multi-word queries return nothing"
+  - Only if genuinely non-obvious
 
-Only act if there's something genuinely worth saving. If nothing stands out, just say 'Nothing to save.' and stop.`;
+## What NOT to save (reject these — they're derivable or ephemeral):
+
+- **File paths, project structure, architecture decisions** — readable from the repo
+- **Commands that ran successfully** — they're in the transcript, not generalizable
+- **Git history, commit messages, who changed what** — git log/blame is authoritative
+- **Bug-fix recipes** — the fix is in the code, the error was ephemeral
+- **Activity summaries** — "today we fixed X" is not a lasting fact
+- **Code snippets, dependency lists, config values** — the file itself is the source of truth
+- **In-progress state** — "investigating X" or "currently working on Y"
+- **Obvious project facts** — "uses TypeScript" or "has a package.json"
+
+## Quality filter
+For each candidate, ask: "Will the agent need to know this six sessions from now?"
+- If the answer is "yes, because it's non-obvious and I'd repeat the mistake" → save
+- If the answer is "no, they'll rediscover it from the project" → skip
+- If the answer is "maybe" → skip (ambiguous facts are noise)
+
+Save at most 3-5 things. Be ruthless. Nothing wrong with 'Nothing to save.'
+
+Use the memory tool (add/replace/remove, target 'memory' or 'user' or 'failure') to save. Use the skill tool for reusable procedures.`;
 
 // ─── Flush prompt (ported from flush_memories() in run_agent.py ~L7379) ───
-export const FLUSH_PROMPT = `[System: The session is being compressed. Save anything worth remembering — prioritize user preferences, corrections, and recurring patterns over task-specific details.]`;
+export const FLUSH_PROMPT = `[System: Session ending — save only what's genuinely durable.
+
+Priority:
+1. Corrections and preferences (highest — never lose these)
+2. Non-obvious gotchas (surprising tool/API behavior)
+3. Deliberate project conventions the user stated
+
+Skip:
+- Task progress, activity summaries, file paths, command outputs
+- Anything derivable from the current project state
+- One-off debugging specifics (the fix was applied; the error is history)
+
+When in doubt, don't save. Quality over quantity.]`;
 
 // ─── Auto-consolidation prompt ───
-export const CONSOLIDATION_PROMPT = `The memory is at capacity. Review the current entries and consolidate them:
-- Merge related entries into a single, concise entry
-- Remove outdated or superseded entries (entries older than 30 days without recent references are candidates for removal)
-- Keep the most important and frequently-referenced facts
-- Preserve user preferences and corrections (highest priority)
+export const CONSOLIDATION_PROMPT = `Memory is near capacity. Review the entries below and consolidate:
 
-Each entry shows when it was created and last referenced in HTML comments (<!-- created=..., last=... -->). Use this to identify stale entries.
+## What to keep (in priority order)
+1. User corrections — never drop these
+2. User preferences — coding style, tool choices, workflow
+3. Project-specific patterns and conventions
+4. Tool quirks and non-obvious gotchas
 
-Use the memory tool to make changes. Be aggressive about merging — less is more.`;
+## What to consider dropping or merging
+- **Derivable facts**: anything that can be rediscovered by reading the project (file paths, architecture, dependency choices)
+- **Activity summaries**: "we worked on X" — no lasting value after the session ends
+- **Low-confidence observations**: things you weren't sure about when saved
+- **Stale entries**: older than 30 days without recent references (check HTML comments <!-- created=..., last=... -->)
+- **Redundant entries**: multiple entries saying the same thing — merge into one
+
+## Guidelines
+- Prefer merging over deleting — keep the signal, just make it denser
+- Corrections stay regardless of age — they're the highest priority
+- Be aggressive: one good dense entry beats five mediocre ones
+- After consolidation, aim for < 70% capacity to leave room for new entries
+
+Use the memory tool (replace/remove) to make changes.`;
 
 // ─── Correction detection patterns (two-pass filter) ───
 
