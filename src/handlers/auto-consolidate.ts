@@ -73,17 +73,25 @@ export function registerConsolidateCommand(
             : store.getUserEntries();
 
         if (entries.length === 0) {
-          results.push(`${target}: (empty, nothing to consolidate)`);
+          results.push(`${target}: (empty, nothing to consolidate)\n`);
           continue;
         }
+
+        results.push(`${target}: ⏳ consolidating...`);
+        ctx.ui.notify(
+          `🔄 Consolidating ${target} entries… (timeout: ${timeoutMs / 1000}s)`,
+          "info",
+        );
 
         const result = await triggerConsolidation(pi, store, target, ctx.signal, timeoutMs);
 
         if (result.consolidated) {
           await store.loadFromDisk();
-          results.push(`${target}: ✅ consolidated`);
+          results.push(`${target}: ✅ consolidated\n`);
+          ctx.ui.notify(`✅ ${target} consolidation complete`, "info");
         } else {
-          results.push(`${target}: ❌ ${result.error}`);
+          results.push(`${target}: ❌ ${result.error}\n`);
+          ctx.ui.notify(`❌ ${target} consolidation failed: ${result.error}`, "error");
         }
       }
 

@@ -273,6 +273,9 @@ export function registerMemoryTool(
           } else {
             result = await store_.add(target, content);
             if (result.success) {
+              if (result.message?.includes("auto-consolidated")) {
+                ctx.ui.notify("🧹 Memory was auto-consolidated to free up space", "info");
+              }
               await syncEvictionsFromSqlite(rawTarget, result.evicted_entries, dbManager, projectName);
               syncWarning = await syncAddToSqlite(rawTarget, content, undefined, undefined, dbManager, projectName);
             }

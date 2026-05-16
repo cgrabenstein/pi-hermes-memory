@@ -207,7 +207,8 @@ export class MemoryStore {
     this.setEntries(target, entries);
     await this.saveToDisk(target);
 
-    return this.successResponse(target, "Entry added.");
+    const message = _retriesLeft < 1 ? "Entry added (memory was auto-consolidated to free up space)." : "Entry added.";
+    return this.successResponse(target, message);
   }
 
   private async fifoEvictAndAdd(
