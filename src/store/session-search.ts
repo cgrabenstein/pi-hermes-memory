@@ -1,17 +1,5 @@
 import { DatabaseManager } from './db.js';
-
-/**
- * Escape a string for FTS5 query syntax.
- * Wraps the query in double quotes to treat it as a literal phrase.
- */
-function escapeFts5Query(query: string): string {
-  // If the query already contains FTS5 operators (OR, AND, NOT, NEAR), leave it as-is
-  if (/\b(OR|AND|NOT|NEAR)\b/.test(query)) {
-    return query;
-  }
-  // Otherwise, wrap in double quotes to treat as literal phrase
-  return `"${query.replace(/"/g, '""')}"`;
-}
+import { buildFts5Query } from './fts5-query.js';
 
 /**
  * Search result from session history.
@@ -59,9 +47,10 @@ export function searchSessions(
   const conditions: string[] = [];
   const params: unknown[] = [];
 
-  // FTS5 match condition — use subquery for reliable rowid matching
-  conditions.push('m.rowid IN (SELECT rowid FROM message_fts WHERE message_fts MATCH ?)');
-  params.push(escapeFts5Query(query));
+  // FTS5 match condition — use JOIN + MATCH on the FTS table for BM25 ranking.
+  // The FTS table name must be used literally (not aliased) for bm25() to work.
+  conditions.push('message_fts MATCH ?');
+  params.push(buildFts5Query(query));
 
   // Project filter
   if (project) {
@@ -93,8 +82,9 @@ export function searchSessions(
       m.content as snippet
     FROM messages m
     JOIN sessions s ON s.id = m.session_id
+    JOIN message_fts ON message_fts.rowid = m.rowid
     ${whereClause}
-    ORDER BY m.timestamp DESC
+    ORDER BY bm25(message_fts)
     LIMIT ?
   `;
   params.push(limit);

@@ -201,14 +201,4 @@ export function getSessionFiles(sessionsDir: string, projectDir?: string): strin
   return files;
 }
 
-/**
- * Decode a project directory name to a human-readable project name.
- * "--Users-chandrateja-Documents-pi-hermes-memory--" → "pi-hermes-memory"
- */
-export function decodeProjectDir(dirName: string): string {
-  // Remove leading/trailing dashes
-  const cleaned = dirName.replace(/^-+|-+$/g, '');
-  // Split by dash and take the last segment (project name)
-  const segments = cleaned.split('-');
-  return segments[segments.length - 1] ?? cleaned;
-}
+

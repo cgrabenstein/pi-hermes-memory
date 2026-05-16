@@ -31,11 +31,13 @@ export const SCHEMA_SQL = `
   );
 
   -- FTS5 index for full-text search across messages
+  -- Porter stemmer + unicode61 tokenizer for English stemming + Unicode support
   -- content='messages' + content_rowid='rowid' keeps FTS in sync with the content table
   CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
     content,
     content='messages',
-    content_rowid='rowid'
+    content_rowid='rowid',
+    tokenize='porter unicode61'
   );
 
   -- Triggers to keep message_fts in sync with messages table
@@ -67,11 +69,13 @@ export const SCHEMA_SQL = `
   );
 
   -- FTS5 index for memory search
+  -- Porter stemmer + unicode61 tokenizer for English stemming + Unicode support
   -- content='memories' + content_rowid='id' keeps FTS in sync
   CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     content,
     content='memories',
-    content_rowid='id'
+    content_rowid='id',
+    tokenize='porter unicode61'
   );
 
   -- Triggers to keep memory_fts in sync with memories table

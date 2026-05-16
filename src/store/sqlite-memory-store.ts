@@ -1,5 +1,6 @@
 import { DatabaseManager } from './db.js';
 import type { MemoryCategory } from '../types.js';
+import { buildFts5Query } from './fts5-query.js';
 
 const MEMORY_SELECT_COLUMNS = `
   id,
@@ -550,18 +551,7 @@ export function removeExactSyncedMemories(
   };
 }
 
-/**
- * Escape a string for FTS5 query syntax.
- * Wraps the query in double quotes to treat it as a literal phrase.
- */
-function escapeFts5Query(query: string): string {
-  // If the query already contains FTS5 operators (OR, AND, NOT, NEAR), leave it as-is
-  if (/\b(OR|AND|NOT|NEAR)\b/.test(query)) {
-    return query;
-  }
-  // Otherwise, wrap in double quotes to treat as literal phrase
-  return `"${query.replace(/"/g, '""')}"`;
-}
+
 
 /**
  * Search memories using FTS5.
@@ -577,9 +567,10 @@ export function searchMemories(
   const conditions: string[] = [];
   const params: unknown[] = [];
 
-  // FTS5 match via subquery with escaped query
-  conditions.push('m.id IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?)');
-  params.push(escapeFts5Query(query));
+  // FTS5 match — use JOIN + MATCH on the FTS table for BM25 ranking.
+  // The FTS table name must be used literally (not aliased) for bm25() to work.
+  conditions.push('memory_fts MATCH ?');
+  params.push(buildFts5Query(query));
 
   if (project !== undefined) {
     if (project === null) {
@@ -603,10 +594,21 @@ export function searchMemories(
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const sql = `
-    SELECT ${MEMORY_SELECT_COLUMNS}
+    SELECT
+      m.id,
+      m.project,
+      m.target,
+      m.category,
+      m.content,
+      m.failure_reason,
+      m.tool_state,
+      m.corrected_to,
+      m.created,
+      m.last_referenced
     FROM memories m
+    JOIN memory_fts ON memory_fts.rowid = m.id
     ${whereClause}
-    ORDER BY m.last_referenced DESC
+    ORDER BY bm25(memory_fts)
     LIMIT ?
   `;
   params.push(limit);

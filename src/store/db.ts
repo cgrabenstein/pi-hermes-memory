@@ -128,6 +128,10 @@ export class DatabaseManager {
     this.migrateLegacyMemoriesTargetConstraint(db);
     this.rebuildMemoryFts(db);
 
+    // Migrate FTS tables to Porter stemmer if they still use the old default tokenizer.
+    this.migrateFtsTokenizer(db, 'message_fts', SCHEMA_SQL);
+    this.migrateFtsTokenizer(db, 'memory_fts', SCHEMA_SQL);
+
     return db;
   }
 
@@ -244,6 +248,76 @@ export class DatabaseManager {
 
     // Keep FTS index consistent after table rebuild/migrations.
     db.exec("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')");
+  }
+
+  /**
+   * Migrate an FTS5 virtual table from the default unicode61 tokenizer to
+   * porter unicode61 if it was created with the old schema.
+   *
+   * Detects the old tokenizer by inspecting sqlite_master.sql for the absence
+   * of 'tokenize='. If the table needs migration, it is dropped along with
+   * its sync triggers, recreated with the new tokenizer, and rebuilt.
+   */
+  private migrateFtsTokenizer(db: DatabaseLike, tableName: string, schemaSql: string): void {
+    const row = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
+    ).get(tableName) as { sql: string } | undefined;
+
+    if (!row) return; // Table doesn't exist yet — fresh schema will create it
+
+    // Already has the new tokenizer — nothing to do
+    if (row.sql.includes("tokenize='porter unicode61'")) return;
+
+    // Need to rebuild: extract the CREATE statement matching this table
+    // from SCHEMA_SQL so we stay in sync with whatever the current schema says.
+    const createMatch = schemaSql.match(
+      new RegExp(`CREATE VIRTUAL TABLE IF NOT EXISTS ${tableName}[^;]+;`, 'i')
+    );
+    if (!createMatch) return;
+    const newCreateSql = createMatch[0];
+
+    // Drop old sync triggers (named <table>_ai, _ad, _au)
+    const prefix = tableName.replace(/_fts$/, 's'); // message_fts → messages, memory_fts → memories
+    for (const suffix of ['_ai', '_ad', '_au']) {
+      const triggerName = `${prefix}${suffix}`;
+      try {
+        db.exec(`DROP TRIGGER IF EXISTS ${triggerName}`);
+      } catch {
+        // Best-effort
+      }
+    }
+
+    // Drop the old FTS virtual table
+    try {
+      db.exec(`DROP TABLE IF EXISTS ${tableName}`);
+    } catch {
+      return; // Can't proceed if drop fails
+    }
+
+    // Recreate with new tokenizer (from current SCHEMA_SQL)
+    db.exec(newCreateSql);
+
+    // Recreate sync triggers (also from SCHEMA_SQL)
+    // Extract all trigger CREATE statements for this table from SCHEMA_SQL
+    const triggerRe = new RegExp(
+      `CREATE TRIGGER IF NOT EXISTS ${prefix}_[a-z]+ AFTER (INSERT|DELETE|UPDATE) ON ${prefix}[^;]+;`,
+      'gi'
+    );
+    let triggerMatch;
+    while ((triggerMatch = triggerRe.exec(schemaSql)) !== null) {
+      try {
+        db.exec(triggerMatch[0]);
+      } catch {
+        // Best-effort per trigger
+      }
+    }
+
+    // Rebuild the FTS index from the source table
+    try {
+      db.exec(`INSERT INTO ${tableName}(${tableName}) VALUES('rebuild')`);
+    } catch {
+      // Best-effort rebuild — next INSERT will populate incrementally
+    }
   }
 
   /**
