@@ -30,6 +30,8 @@ function createMockPi(execReturn?: { code: number; stdout: string; stderr: strin
 const mockStore = {
   getMemoryEntries: () => ["old entry 1", "old entry 2"],
   getUserEntries: () => ["user fact 1"],
+  getFailureEntries: () => ["[correction] fix: use pnpm, not npm"],
+  replaceAll: async () => {},
   loadFromDisk: async () => {},
 } as any;
 
@@ -60,7 +62,7 @@ describe("triggerConsolidation", () => {
   });
 
   it("returns { consolidated: true } on success (exit code 0)", async () => {
-    const pi = createMockPi({ code: 0, stdout: "Done", stderr: "" });
+    const pi = createMockPi({ code: 0, stdout: '{"entries":["merged consolidated entry from old entries that is long enough to pass the size guard"]}', stderr: "" });
     const result = await triggerConsolidation(pi, mockStore, "memory");
 
     assert.strictEqual(result.consolidated, true);
@@ -100,18 +102,19 @@ describe("triggerConsolidation", () => {
     assert.ok(prompt.includes("User Profile"), "prompt should reference user profile");
   });
 
-  it("handles empty entries gracefully", async () => {
+  it("returns early for empty entries", async () => {
     const emptyStore = {
       getMemoryEntries: () => [],
       getUserEntries: () => [],
+      getFailureEntries: () => [],
       loadFromDisk: async () => {},
     } as any;
 
     const pi = createMockPi();
-    await triggerConsolidation(pi, emptyStore, "memory");
+    const result = await triggerConsolidation(pi, emptyStore, "memory");
 
-    const prompt = execCalls[0][1][execCalls[0][1].length - 1];
-    assert.ok(prompt.includes("(empty)"), "prompt should show (empty) for empty entries");
+    assert.strictEqual(result.consolidated, true);
+    assert.strictEqual(execCalls.length, 0, "should NOT call pi.exec for empty entries");
   });
 });
 
