@@ -33,7 +33,9 @@ export async function triggerConsolidation(
   ].join("\n");
 
   try {
-    const result = await pi.exec("pi", ["-p", "--no-session", prompt], {
+    // Only expose the memory tool — no built-in tools (bash, write, edit)
+    // that could trigger approval dialogs in a headless subprocess.
+    const result = await pi.exec("pi", ["-p", "--no-session", "--tools", "memory", "--thinking", "off", prompt], {
       signal,
       timeout: timeoutMs,
     });
