@@ -323,6 +323,26 @@ export class MemoryStore {
     return this.successResponse(target, "Entry removed.");
   }
 
+  /**
+   * Atomically replace all entries for a target with a new set.
+   * Each entry text is encoded with today's metadata dates.
+   * Called after deterministic consolidation to apply results.
+   */
+  async replaceAll(target: "memory" | "user" | "failure", texts: string[]): Promise<void> {
+    const today = new Date().toISOString().split("T")[0];
+    const encoded = texts.map((t) => this.encodeEntry(t, today, today));
+    this.setEntries(target, encoded);
+    await this.saveToDisk(target);
+    // Refresh snapshot so system prompt sees the new content
+    const stripped = encoded.map((e) => this.stripMetadata(e));
+    if (target === "user") {
+      this.snapshot.user = this.renderBlock("user", stripped);
+    } else if (target === "memory") {
+      this.snapshot.memory = this.renderBlock("memory", stripped);
+    }
+    // Failure snapshot isn't cached separately — loadFromDisk will recompute
+  }
+
   // ─── System prompt injection (frozen snapshot) ───
 
   formatForSystemPrompt(): string {
