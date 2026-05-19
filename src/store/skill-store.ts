@@ -1,7 +1,7 @@
 /**
  * SkillStore — procedural memory stored as Pi-native skills.
  *
- * Global skills live in ~/.pi/agent/skills/<slug>/SKILL.md.
+ * Global skills live in ~/.pi/agent/pi-hermes-memory/skills/<slug>/SKILL.md.
  * Project skills live in ~/.pi/agent/<projectsMemoryDir>/<project>/skills/<slug>/SKILL.md.
  */
 
@@ -27,6 +27,7 @@ interface SkillStoreOptions {
   projectSkillsDir?: string | null;
   projectName?: string | null;
   legacySkillsDir?: string;
+  legacyPiGlobalSkillsDir?: string;
   migrationSentinelPath?: string;
 }
 
@@ -50,6 +51,7 @@ export class SkillStore {
   private projectSkillsDir: string | null;
   private projectName: string | null;
   private legacySkillsDir: string;
+  private legacyPiGlobalSkillsDir: string;
   private migrationSentinelPath: string;
 
   constructor(options: SkillStoreOptions = {}) {
@@ -58,8 +60,9 @@ export class SkillStore {
     this.projectSkillsDir = options.projectSkillsDir ?? null;
     this.projectName = options.projectName ?? null;
     this.legacySkillsDir = options.legacySkillsDir ?? path.join(agentRoot, "memory", "skills");
+    this.legacyPiGlobalSkillsDir = options.legacyPiGlobalSkillsDir ?? path.join(agentRoot, "skills");
     this.migrationSentinelPath = options.migrationSentinelPath
-      ?? path.join(agentRoot, "memory", ".skills-migrated-to-pi-native");
+      ?? path.join(agentRoot, "pi-hermes-memory", ".skills-migrated-to-extension-storage");
   }
 
   getGlobalSkillsDir(): string {
@@ -89,52 +92,17 @@ export class SkillStore {
   async migrateLegacySkills(): Promise<LegacySkillMigrationResult> {
     const result: LegacySkillMigrationResult = { migrated: 0, skipped: 0, warnings: [] };
 
+    // Always normalize flat markdown files under the global skills root,
+    // even when a previous migration sentinel already exists.
+    await this.migrateFlatMarkdownInGlobalSkillsDir(result);
+
     if (await exists(this.migrationSentinelPath)) return result;
 
     await fs.mkdir(path.dirname(this.migrationSentinelPath), { recursive: true });
 
     try {
-      if (!await exists(this.legacySkillsDir)) return result;
-
-      const files = (await fs.readdir(this.legacySkillsDir))
-        .filter((file) => file.endsWith(".md"))
-        .sort();
-
-      for (const file of files) {
-        const legacyPath = path.join(this.legacySkillsDir, file);
-        try {
-          const raw = await fs.readFile(legacyPath, "utf-8");
-          const parsed = parseFrontmatter(raw);
-          const fallbackSlug = slugify(path.basename(file, ".md"));
-          const slug = slugify(parsed.meta.name || fallbackSlug);
-          if (!slug) {
-            result.skipped++;
-            continue;
-          }
-
-          const targetPath = path.join(this.globalSkillsDir, slug, "SKILL.md");
-          if (await exists(targetPath)) {
-            result.skipped++;
-            continue;
-          }
-
-          const skillDoc = {
-            name: slug,
-            displayName: parsed.meta.display_name?.trim() || parsed.meta.name?.trim() || undefined,
-            description: parsed.meta.description?.trim() || `Migrated legacy skill: ${slug}`,
-            version: Number.parseInt(parsed.meta.version || "1", 10) || 1,
-            created: parsed.meta.created || today(),
-            updated: parsed.meta.updated || today(),
-            body: parsed.body || `# ${slug}\n`,
-          };
-
-          await fs.mkdir(path.dirname(targetPath), { recursive: true });
-          await this.atomicWrite(targetPath, formatFrontmatter(skillDoc));
-          result.migrated++;
-        } catch (error) {
-          result.warnings.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
+      await this.migrateLegacyMarkdownSkills(result);
+      await this.migrateLegacyPiGlobalSkillDirs(result);
     } finally {
       if (result.warnings.length === 0) {
         await fs.writeFile(this.migrationSentinelPath, `${new Date().toISOString()}\n`, "utf-8");
@@ -142,6 +110,137 @@ export class SkillStore {
     }
 
     return result;
+  }
+
+  private async migrateLegacyMarkdownSkills(result: LegacySkillMigrationResult): Promise<void> {
+    if (!await exists(this.legacySkillsDir)) return;
+
+    const files = (await fs.readdir(this.legacySkillsDir))
+      .filter((file) => file.endsWith(".md"))
+      .sort();
+
+    for (const file of files) {
+      const legacyPath = path.join(this.legacySkillsDir, file);
+      try {
+        const raw = await fs.readFile(legacyPath, "utf-8");
+        const parsed = parseFrontmatter(raw);
+        const fallbackSlug = slugify(path.basename(file, ".md"));
+        const slug = slugify(parsed.meta.name || fallbackSlug);
+        if (!slug) {
+          result.skipped++;
+          continue;
+        }
+
+        const targetPath = path.join(this.globalSkillsDir, slug, "SKILL.md");
+        if (await exists(targetPath)) {
+          result.skipped++;
+          continue;
+        }
+
+        const skillDoc = {
+          name: slug,
+          displayName: parsed.meta.display_name?.trim() || parsed.meta.name?.trim() || undefined,
+          description: parsed.meta.description?.trim() || `Migrated legacy skill: ${slug}`,
+          version: Number.parseInt(parsed.meta.version || "1", 10) || 1,
+          created: parsed.meta.created || today(),
+          updated: parsed.meta.updated || today(),
+          body: parsed.body || `# ${slug}\n`,
+        };
+
+        await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        await this.atomicWrite(targetPath, formatFrontmatter(skillDoc));
+        result.migrated++;
+      } catch (error) {
+        result.warnings.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  private async migrateFlatMarkdownInGlobalSkillsDir(result: LegacySkillMigrationResult): Promise<void> {
+    if (!await exists(this.globalSkillsDir)) return;
+
+    const files = (await fs.readdir(this.globalSkillsDir))
+      .filter((file) => file.endsWith(".md") && file !== "SKILL.md")
+      .sort();
+
+    for (const file of files) {
+      const legacyPath = path.join(this.globalSkillsDir, file);
+      try {
+        const raw = await fs.readFile(legacyPath, "utf-8");
+        const parsed = parseFrontmatter(raw);
+        const fallbackSlug = slugify(path.basename(file, ".md"));
+        const slug = slugify(parsed.meta.name || fallbackSlug);
+        if (!slug) {
+          result.skipped++;
+          continue;
+        }
+
+        const targetPath = path.join(this.globalSkillsDir, slug, "SKILL.md");
+        if (await exists(targetPath)) {
+          await fs.rm(legacyPath, { force: true });
+          result.skipped++;
+          continue;
+        }
+
+        const skillDoc = {
+          name: slug,
+          displayName: parsed.meta.display_name?.trim() || parsed.meta.name?.trim() || undefined,
+          description: parsed.meta.description?.trim() || `Migrated legacy skill: ${slug}`,
+          version: Number.parseInt(parsed.meta.version || "1", 10) || 1,
+          created: parsed.meta.created || today(),
+          updated: parsed.meta.updated || today(),
+          body: parsed.body || `# ${slug}\n`,
+        };
+
+        await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        await this.atomicWrite(targetPath, formatFrontmatter(skillDoc));
+        await fs.rm(legacyPath, { force: true });
+        result.migrated++;
+      } catch (error) {
+        result.warnings.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  private async migrateLegacyPiGlobalSkillDirs(result: LegacySkillMigrationResult): Promise<void> {
+    if (path.resolve(this.legacyPiGlobalSkillsDir) === path.resolve(this.globalSkillsDir)) return;
+    if (!await exists(this.legacyPiGlobalSkillsDir)) return;
+
+    const entries = await fs.readdir(this.legacyPiGlobalSkillsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+
+      const sourceDir = path.join(this.legacyPiGlobalSkillsDir, entry.name);
+      const sourceSkill = path.join(sourceDir, "SKILL.md");
+      if (!await exists(sourceSkill)) continue;
+
+      const targetDir = path.join(this.globalSkillsDir, entry.name);
+      const targetSkill = path.join(targetDir, "SKILL.md");
+      if (await exists(targetSkill)) {
+        result.skipped++;
+        continue;
+      }
+
+      try {
+        const raw = await fs.readFile(sourceSkill, "utf-8");
+        const parsed = parseFrontmatter(raw);
+        const hasExtensionManagedMeta = Boolean(parsed.meta.display_name)
+          && Boolean(parsed.meta.created)
+          && Boolean(parsed.meta.updated)
+          && /^\d+$/.test(parsed.meta.version ?? "");
+
+        if (!hasExtensionManagedMeta) {
+          result.skipped++;
+          continue;
+        }
+
+        await fs.mkdir(path.dirname(targetDir), { recursive: true });
+        await fs.rename(sourceDir, targetDir);
+        result.migrated++;
+      } catch (error) {
+        result.warnings.push(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   async loadIndex(scope?: SkillScope): Promise<SkillIndex[]> {
@@ -333,6 +432,143 @@ export class SkillStore {
       skillId: doc.skillId,
       scope: doc.scope,
       path: doc.path,
+    };
+  }
+
+  async move(skillId: string, targetScope: SkillScope): Promise<SkillResult> {
+    const doc = await this.loadSkill(skillId);
+    if (!doc) return { success: false, error: `Skill '${skillId}' not found.` };
+
+    const parsed = parseSkillId(skillId);
+    if (!parsed) return { success: false, error: `Skill '${skillId}' is invalid.` };
+
+    if (doc.scope === targetScope) {
+      return {
+        success: true,
+        message: `Skill '${doc.displayName || doc.name}' is already ${targetScope}.`,
+        fileName: doc.fileName,
+        skillId: doc.skillId,
+        scope: doc.scope,
+        path: doc.path,
+      };
+    }
+
+    const targetRoot = this.getScopeRoot(targetScope);
+    if (!targetRoot) {
+      return { success: false, error: "Project skills require an active project." };
+    }
+
+    const targetSkillId = buildSkillId(targetScope, parsed.slug, this.projectName);
+    const targetPath = path.join(targetRoot, parsed.slug, "SKILL.md");
+    if (await exists(targetPath)) {
+      return {
+        success: false,
+        error: `Cannot move '${doc.displayName || doc.name}' to ${targetScope}: ${targetSkillId} already exists.`,
+        conflictType: "scope-conflict",
+        similarSkillIds: [targetSkillId],
+        suggestedAction: "rename",
+      };
+    }
+
+    if (targetScope === "global") {
+      const similarSkillIds = await this.findSimilarGlobalSkillIds(parsed.slug, doc.description);
+      if (similarSkillIds.length > 0) {
+        const targetId = similarSkillIds[0];
+        return {
+          success: false,
+          error: `Cannot move '${doc.displayName || doc.name}' to global: a similar global skill already exists (${targetId}).`,
+          conflictType: "similar",
+          similarSkillIds,
+          suggestedAction: "patch",
+        };
+      }
+
+      const collidingNameSkillIds = await this.findNameCollisionGlobalSkillIds(parsed.slug, doc.description);
+      if (collidingNameSkillIds.length > 0) {
+        const targetId = collidingNameSkillIds[0];
+        return {
+          success: false,
+          error: `Cannot move '${doc.displayName || doc.name}' to global: a near-name global skill already exists (${targetId}) with different intent.`,
+          conflictType: "name-collision",
+          similarSkillIds: collidingNameSkillIds,
+          suggestedAction: "rename",
+        };
+      }
+    }
+
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+
+    // Same-filesystem move: use rename first for atomicity and to avoid duplicate windows.
+    try {
+      await fs.rename(doc.path, targetPath);
+
+      if (path.basename(doc.path) === "SKILL.md") {
+        await this.removeEmptyParents(path.dirname(doc.path), this.getScopeRoot(doc.scope));
+      }
+
+      return {
+        success: true,
+        message: `Skill '${doc.displayName || doc.name}' moved to ${targetScope}.`,
+        fileName: path.basename(targetPath),
+        skillId: targetSkillId,
+        scope: targetScope,
+        path: targetPath,
+      };
+    } catch (renameError) {
+      const code = (renameError as NodeJS.ErrnoException)?.code;
+      if (code !== "EXDEV") {
+        return {
+          success: false,
+          error: `Move to ${targetScope} failed before copy for skill '${skillId}'. Source path: ${doc.path}. Destination path: ${targetPath}. Error: ${renameError instanceof Error ? renameError.message : String(renameError)}`,
+        };
+      }
+      // Cross-device fallback below.
+    }
+
+    // Cross-device fallback: copy then remove source.
+    await this.atomicWrite(targetPath, formatFrontmatter({
+      name: parsed.slug,
+      displayName: doc.displayName,
+      description: doc.description,
+      version: doc.version,
+      created: doc.created,
+      updated: doc.updated,
+      body: doc.body,
+    }));
+
+    try {
+      await fs.unlink(doc.path);
+      if (path.basename(doc.path) === "SKILL.md") {
+        await this.removeEmptyParents(path.dirname(doc.path), this.getScopeRoot(doc.scope));
+      }
+    } catch (error) {
+      // Best-effort rollback: remove the destination copy if source removal fails,
+      // so we do not silently leave duplicate skills across scopes.
+      let rollbackFailed = false;
+      try {
+        await fs.unlink(targetPath);
+        if (path.basename(targetPath) === "SKILL.md") {
+          await this.removeEmptyParents(path.dirname(targetPath), this.getScopeRoot(targetScope));
+        }
+      } catch {
+        rollbackFailed = true;
+      }
+
+      return {
+        success: false,
+        error: rollbackFailed
+          ? `Move to ${targetScope} failed while removing source skill '${skillId}', and rollback also failed. Source path: ${doc.path}. Destination path: ${targetPath}. Error: ${error instanceof Error ? error.message : String(error)}`
+          : `Move to ${targetScope} failed while removing source skill '${skillId}'. Rolled back destination copy. Source path: ${doc.path}. Destination path: ${targetPath}. Error: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+
+    return {
+      success: true,
+      message: `Skill '${doc.displayName || doc.name}' moved to ${targetScope}.`,
+      fileName: path.basename(targetPath),
+      skillId: targetSkillId,
+      scope: targetScope,
+      path: targetPath,
     };
   }
 

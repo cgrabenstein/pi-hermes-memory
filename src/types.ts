@@ -6,6 +6,13 @@ import type { TextContent } from "@earendil-works/pi-ai";
 
 export type MemoryOverflowStrategy = "auto-consolidate" | "reject" | "fifo-evict";
 
+export type SessionSearchVariant = "legacy" | "anchors";
+
+export interface SessionSearchConfig {
+  /** Session search implementation variant. Default: legacy */
+  variant: SessionSearchVariant;
+}
+
 export interface MemoryConfig {
   /** Prompt memory mode. Default: policy-only */
   memoryMode: "policy-only" | "legacy-inject";
@@ -33,10 +40,12 @@ export interface MemoryConfig {
   flushMinTurns: number;
   /** Recent conversation messages included in session flush. 0 = all. Default: 0 */
   flushRecentMessages?: number;
-  /** Override memory directory. Default: ~/.pi/agent/memory */
+  /** Override extension storage directory. Default: ~/.pi/agent/pi-hermes-memory */
   memoryDir?: string;
   /** Directory for project-scoped memory (relative to ~/.pi/agent). Default: "projects-memory" */
   projectsMemoryDir?: string;
+  /** Session search configuration. Default: { variant: "legacy" } */
+  sessionSearch?: SessionSearchConfig;
   /** Strategy when memory is full. Default: auto-consolidate */
   memoryOverflowStrategy?: MemoryOverflowStrategy;
   /** Legacy alias for memoryOverflowStrategy. Default: true */
@@ -61,10 +70,6 @@ export interface MemoryConfig {
   nudgeToolCalls: number;
   /** Maximum time in milliseconds for auto-consolidation to complete. Default: 60000 */
   consolidationTimeoutMs: number;
-  /** Enable session history search via SQLite FTS5. Default: true */
-  sessionSearchEnabled?: boolean;
-  /** Days to retain session history. Default: 90 */
-  sessionRetentionDays?: number;
 }
 
 export type MemoryCategory =
@@ -142,7 +147,7 @@ export interface SkillResult {
   skillId?: string;
   scope?: SkillScope;
   path?: string;
-  conflictType?: "duplicate" | "similar" | "name-collision";
+  conflictType?: "duplicate" | "similar" | "name-collision" | "scope-conflict";
   similarSkillIds?: string[];
   suggestedAction?: "patch" | "edit" | "rename";
 }

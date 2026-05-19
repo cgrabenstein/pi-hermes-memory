@@ -48,47 +48,46 @@ import { registerLearnMemoryCommand } from "./handlers/learn-memory.js";
 import { registerSyncMarkdownMemoriesCommand, syncMarkdownMemoriesToSqlite } from "./handlers/sync-markdown-memories.js";
 import { registerPreviewContextCommand } from "./handlers/preview-context.js";
 import { loadConfig } from "./config.js";
-import { detectProject, detectProjectSkills } from "./project.js";
+import { detectProject } from "./project.js";
 import { buildPromptContext } from "./prompt-context.js";
 import { migrateLegacyProjectMemoryDirs } from "./project-memory-migration.js";
+import { migrateExtensionRoot } from "./extension-root-migration.js";
+import {
+  resolveProjectSkillDiscovery,
+  registerProjectSkillDiscoveryHandler,
+} from "./project-skill-discovery.js";
 
-export function resolveProjectSkillDiscovery(
-  skillStore: SkillStore,
-  projectsMemoryDir: string | undefined,
-  cwd?: string,
-): { skillPaths: string[] } | undefined {
-  const detected = detectProjectSkills(projectsMemoryDir, cwd);
-  skillStore.setProjectContext(detected.name, detected.skillsDir);
-  if (!detected.skillsDir) return undefined;
-  return {
-    skillPaths: [detected.skillsDir],
-  };
-}
-
-export function registerProjectSkillDiscoveryHandler(
-  pi: Pick<ExtensionAPI, "on">,
-  skillStore: SkillStore,
-  projectsMemoryDir: string | undefined,
-): void {
-  pi.on("resources_discover", async (event, _ctx) => {
-    return resolveProjectSkillDiscovery(skillStore, projectsMemoryDir, (event as { cwd?: string }).cwd);
-  });
-}
+export { resolveProjectSkillDiscovery, registerProjectSkillDiscoveryHandler };
 
 export default function (pi: ExtensionAPI) {
   const config = loadConfig();
 
-  const globalDir = config.memoryDir ?? path.join(os.homedir(), ".pi", "agent", "memory");
   const agentRoot = path.join(os.homedir(), ".pi", "agent");
-  const store = new MemoryStore(config);
+  const legacyGlobalDir = path.join(agentRoot, "memory");
+  const defaultGlobalDir = path.join(agentRoot, "pi-hermes-memory");
+
+  const configuredMemoryDir = config.memoryDir?.trim();
+  const pointsToLegacyMemoryDir = configuredMemoryDir
+    ? path.resolve(configuredMemoryDir) === path.resolve(legacyGlobalDir)
+    : false;
+
+  const globalDir = !configuredMemoryDir || pointsToLegacyMemoryDir
+    ? defaultGlobalDir
+    : configuredMemoryDir;
+
+  const shouldMigrateExtensionRoot = !configuredMemoryDir || pointsToLegacyMemoryDir;
+  let extensionRootMigrated = false;
+
+  const store = new MemoryStore({ ...config, memoryDir: globalDir });
   const project = detectProject(config.projectsMemoryDir);
   const projectName = project.name ?? "";
   const skillStore = new SkillStore({
-    globalSkillsDir: path.join(agentRoot, "skills"),
+    globalSkillsDir: path.join(globalDir, "skills"),
     projectSkillsDir: project.memoryDir ? path.join(project.memoryDir, "skills") : null,
     projectName: project.name,
-    legacySkillsDir: path.join(globalDir, "skills"),
-    migrationSentinelPath: path.join(globalDir, ".skills-migrated-to-pi-native"),
+    legacySkillsDir: path.join(legacyGlobalDir, "skills"),
+    legacyPiGlobalSkillsDir: path.join(agentRoot, "skills"),
+    migrationSentinelPath: path.join(globalDir, ".skills-migrated-to-extension-storage"),
   });
   const dbManager = new DatabaseManager(globalDir);
 
@@ -120,6 +119,15 @@ export default function (pi: ExtensionAPI) {
 
   // ── 1. Load memory from disk on session start ──
   pi.on("session_start", async (event, _ctx) => {
+    if (shouldMigrateExtensionRoot && !extensionRootMigrated) {
+      try {
+        await migrateExtensionRoot(legacyGlobalDir, globalDir);
+      } catch {
+        // best effort migration only
+      }
+      extensionRootMigrated = true;
+    }
+
     refreshSkillProjectContext((event as { cwd?: string }).cwd);
     await skillStore.migrateLegacySkills();
     await skillStore.ensureDiscoveredRoots();
@@ -174,7 +182,7 @@ export default function (pi: ExtensionAPI) {
   registerPreviewContextCommand(pi, store, projectStore, projectName, config);
 
   // ── 11. SQLite session search + extended memory ──
-  registerSessionSearchTool(pi, dbManager);
+  registerSessionSearchTool(pi, dbManager, config.sessionSearch ?? { variant: "legacy" });
   registerMemorySearchTool(pi, dbManager);
   registerIndexSessionsCommand(pi);
 

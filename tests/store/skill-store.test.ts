@@ -13,6 +13,7 @@ let ROOT_DIR = "";
 let GLOBAL_SKILLS_DIR = "";
 let PROJECT_SKILLS_DIR = "";
 let LEGACY_SKILLS_DIR = "";
+let LEGACY_PI_GLOBAL_SKILLS_DIR = "";
 let MIGRATION_SENTINEL = "";
 
 async function makeStore(withProject = true): Promise<SkillStore> {
@@ -21,6 +22,7 @@ async function makeStore(withProject = true): Promise<SkillStore> {
     projectSkillsDir: withProject ? PROJECT_SKILLS_DIR : null,
     projectName: withProject ? "demo-project" : null,
     legacySkillsDir: LEGACY_SKILLS_DIR,
+    legacyPiGlobalSkillsDir: LEGACY_PI_GLOBAL_SKILLS_DIR,
     migrationSentinelPath: MIGRATION_SENTINEL,
   });
 }
@@ -34,6 +36,7 @@ async function cleanSlate(): Promise<void> {
   await fs.mkdir(GLOBAL_SKILLS_DIR, { recursive: true });
   await fs.mkdir(PROJECT_SKILLS_DIR, { recursive: true });
   await fs.mkdir(LEGACY_SKILLS_DIR, { recursive: true });
+  await fs.mkdir(LEGACY_PI_GLOBAL_SKILLS_DIR, { recursive: true });
 }
 
 async function readFile(filePath: string): Promise<string> {
@@ -46,6 +49,7 @@ describe("SkillStore", { concurrency: 1 }, () => {
     GLOBAL_SKILLS_DIR = path.join(ROOT_DIR, "global-skills");
     PROJECT_SKILLS_DIR = path.join(ROOT_DIR, "project-skills");
     LEGACY_SKILLS_DIR = path.join(ROOT_DIR, "legacy-skills");
+    LEGACY_PI_GLOBAL_SKILLS_DIR = path.join(ROOT_DIR, "legacy-pi-global-skills");
     MIGRATION_SENTINEL = path.join(ROOT_DIR, ".skill-migration");
   });
 
@@ -78,9 +82,9 @@ describe("SkillStore", { concurrency: 1 }, () => {
       assert.strictEqual(result.skillId, "global:debug-typescript-errors");
       const filePath = path.join(GLOBAL_SKILLS_DIR, "debug-typescript-errors", "SKILL.md");
       const raw = await readFile(filePath);
-      assert.ok(raw.includes("name: debug-typescript-errors"));
-      assert.ok(raw.includes("display_name: Debug TypeScript Errors"));
-      assert.ok(raw.includes("description: Step-by-step"));
+      assert.ok(raw.includes('name: "debug-typescript-errors"'));
+      assert.ok(raw.includes('display_name: "Debug TypeScript Errors"'));
+      assert.ok(raw.includes('description: "Step-by-step approach to debugging TS errors"'));
       assert.ok(raw.includes("version: 1"));
       assert.ok(raw.includes("## Procedure"));
     });
@@ -98,8 +102,8 @@ describe("SkillStore", { concurrency: 1 }, () => {
       assert.strictEqual(result.skillId, "project:demo-project:release-app");
       const filePath = path.join(PROJECT_SKILLS_DIR, "release-app", "SKILL.md");
       const raw = await readFile(filePath);
-      assert.ok(raw.includes("name: release-app"));
-      assert.ok(raw.includes("display_name: Release App"));
+      assert.ok(raw.includes('name: "release-app"'));
+      assert.ok(raw.includes('display_name: "Release App"'));
       assert.ok(raw.includes("Run pnpm deploy"));
     });
 
@@ -330,6 +334,55 @@ describe("SkillStore", { concurrency: 1 }, () => {
     });
   });
 
+  describe("move()", () => {
+    it("moves a global skill into the active project scope", async () => {
+      const store = await makeStore();
+      const created = await store.create("move-me", "Reusable process", "## Procedure\n1. Do it", "global");
+
+      const result = await store.move(created.skillId!, "project");
+      assert.ok(result.success, `move failed: ${result.error}`);
+      assert.strictEqual(result.skillId, "project:demo-project:move-me");
+      await assert.rejects(fs.access(path.join(GLOBAL_SKILLS_DIR, "move-me", "SKILL.md")));
+      await fs.access(path.join(PROJECT_SKILLS_DIR, "move-me", "SKILL.md"));
+    });
+
+    it("moves a project skill into global scope", async () => {
+      const store = await makeStore();
+      const created = await store.create("repo-runbook", "Project process", "## Procedure\n1. Run it", "project");
+
+      const result = await store.move(created.skillId!, "global");
+      assert.ok(result.success, `move failed: ${result.error}`);
+      assert.strictEqual(result.skillId, "global:repo-runbook");
+      await assert.rejects(fs.access(path.join(PROJECT_SKILLS_DIR, "repo-runbook", "SKILL.md")));
+      await fs.access(path.join(GLOBAL_SKILLS_DIR, "repo-runbook", "SKILL.md"));
+    });
+
+    it("blocks move when destination scope already has the same slug", async () => {
+      const store = await makeStore();
+      const globalSkill = await store.create("same-name", "global skill", "body", "global");
+      const projectSkill = await store.create("same-name", "project skill", "body", "project");
+
+      const result = await store.move(globalSkill.skillId!, "project");
+      assert.ok(!result.success);
+      assert.strictEqual(result.conflictType, "scope-conflict");
+      assert.ok(result.error?.includes("already exists"));
+
+      const globalDoc = await store.loadSkill(globalSkill.skillId!);
+      const projectDoc = await store.loadSkill(projectSkill.skillId!);
+      assert.ok(globalDoc);
+      assert.ok(projectDoc);
+    });
+
+    it("returns an error when moving to project scope without an active project", async () => {
+      const store = await makeStore(false);
+      const created = await store.create("global-skill", "desc", "body", "global");
+
+      const result = await store.move(created.skillId!, "project");
+      assert.ok(!result.success);
+      assert.ok(result.error?.includes("active project"));
+    });
+  });
+
   describe("delete()", () => {
     it("removes the skill file from disk", async () => {
       const store = await makeStore();
@@ -377,9 +430,9 @@ describe("SkillStore", { concurrency: 1 }, () => {
       assert.strictEqual(result.migrated, 1);
       const migratedPath = path.join(GLOBAL_SKILLS_DIR, "legacy-skill", "SKILL.md");
       const raw = await readFile(migratedPath);
-      assert.ok(raw.includes("name: legacy-skill"));
-      assert.ok(raw.includes("display_name: Legacy Skill"));
-      assert.ok(raw.includes("description: Legacy migrated skill"));
+      assert.ok(raw.includes('name: "legacy-skill"'));
+      assert.ok(raw.includes('display_name: "Legacy Skill"'));
+      assert.ok(raw.includes('description: "Legacy migrated skill"'));
       assert.ok(raw.includes("1. Do the legacy thing"));
     });
 
@@ -428,6 +481,24 @@ describe("SkillStore", { concurrency: 1 }, () => {
       const raw = await readFile(path.join(existingDir, "SKILL.md"));
       assert.ok(raw.includes("Existing global skill"));
       assert.ok(!raw.includes("Legacy version"));
+    });
+
+    it("migrates flat markdown files under global skills root into SKILL.md folders", async () => {
+      await fs.writeFile(path.join(GLOBAL_SKILLS_DIR, "flat-legacy.md"), [
+        "---",
+        "name: flat-legacy",
+        "description: Flat legacy skill",
+        "---",
+        "# Flat Body",
+      ].join("\n"), "utf-8");
+
+      const store = await makeStore();
+      const result = await store.migrateLegacySkills();
+
+      assert.strictEqual(result.migrated, 1);
+      await assert.rejects(fs.access(path.join(GLOBAL_SKILLS_DIR, "flat-legacy.md")));
+      const migrated = await readFile(path.join(GLOBAL_SKILLS_DIR, "flat-legacy", "SKILL.md"));
+      assert.ok(migrated.includes('description: "Flat legacy skill"'));
     });
 
     it("does not write the sentinel when warnings occur, so migration can retry", async () => {
