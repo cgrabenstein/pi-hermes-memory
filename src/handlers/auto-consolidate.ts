@@ -117,7 +117,10 @@ Output a single JSON object with this exact structure:
 The "entries" array is the COMPLETE new list of entries to keep — no extra items, no missing items.
 - Do NOT include HTML comments, metadata markers, or \u00a7 delimiters in the entry text
 - At least one entry must remain
-- Output ONLY the JSON object, no markdown fences, no explanation text`;
+- The FIRST non-whitespace character of your response MUST be '{'. The LAST non-whitespace character MUST be '}'.
+- Do NOT output any text, analysis, reasoning, or explanation before or after the JSON object.
+- Do NOT wrap in markdown code fences.
+- Output ONLY the raw JSON object.`;
 
   return [
     philosophy,
@@ -127,17 +130,20 @@ The "entries" array is the COMPLETE new list of entries to keep — no extra ite
 }
 
 /**
- * Parse JSON from subprocess stdout, handling optional markdown fences.
+ * Parse JSON from subprocess stdout, handling optional markdown fences
+ * and surrounding analysis/explanation text.
  */
 function parseConsolidationPlan(output: string): { entries: string[] } | null {
-  // Strip markdown code fences if present
   let cleaned = output.trim();
+
+  // Strip markdown code fences if present
   cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, "");
   cleaned = cleaned.replace(/\n?```\s*$/, "");
-  cleaned = cleaned.trim();
 
+  // Try direct JSON parse first (fast path)
+  const trimmed = cleaned.trim();
   try {
-    const parsed = JSON.parse(cleaned);
+    const parsed = JSON.parse(trimmed);
     if (
       parsed &&
       typeof parsed === "object" &&
@@ -146,10 +152,32 @@ function parseConsolidationPlan(output: string): { entries: string[] } | null {
     ) {
       return { entries: parsed.entries.map((e: string) => e.trim()).filter(Boolean) };
     }
-    return null;
   } catch {
-    return null;
+    // Fall through to extraction
   }
+
+  // Robust extraction: find the outermost `{...}` containing "entries"
+  // This handles LLMs that output analysis/reasoning text before the JSON plan.
+  const startIdx = trimmed.indexOf("{");
+  const endIdx = trimmed.lastIndexOf("}");
+  if (startIdx !== -1 && endIdx > startIdx) {
+    const candidate = trimmed.slice(startIdx, endIdx + 1);
+    try {
+      const parsed = JSON.parse(candidate);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        Array.isArray(parsed.entries) &&
+        parsed.entries.every((e: unknown) => typeof e === "string")
+      ) {
+        return { entries: parsed.entries.map((e: string) => e.trim()).filter(Boolean) };
+      }
+    } catch {
+      // Not valid JSON even after extraction
+    }
+  }
+
+  return null;
 }
 
 export async function triggerConsolidation(

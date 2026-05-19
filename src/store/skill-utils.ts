@@ -15,7 +15,13 @@ export function parseFrontmatter(raw: string): ParsedSkillFile {
     const idx = line.indexOf(":");
     if (idx > 0) {
       const key = line.slice(0, idx).trim();
-      const value = line.slice(idx + 1).trim();
+      let value = line.slice(idx + 1).trim();
+      // Strip surrounding quotes (double or single) from YAML values
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+        // Unescape escaped double quotes
+        value = value.replace(/\\"/g, '"');
+      }
       meta[key] = value;
     }
   }
@@ -23,18 +29,25 @@ export function parseFrontmatter(raw: string): ParsedSkillFile {
   return { meta, body: match[2].trim() };
 }
 
+function quoteYamlValue(value: string): string {
+  // Always wrap in double quotes to prevent "Nested mappings not allowed" errors
+  // from colons in trigger phrases, lists, or subtitles.
+  const escaped = value.replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
 export function formatFrontmatter(doc: Pick<SkillDocument, "name" | "displayName" | "description" | "version" | "created" | "updated" | "body">): string {
   const lines = [
     "---",
     `name: ${doc.name}`,
-    `description: ${doc.description}`,
+    `description: ${quoteYamlValue(doc.description)}`,
     `version: ${doc.version}`,
     `created: ${doc.created}`,
     `updated: ${doc.updated}`,
   ];
 
   if (doc.displayName && doc.displayName.trim() && doc.displayName.trim() !== doc.name) {
-    lines.push(`display_name: ${doc.displayName.trim()}`);
+    lines.push(`display_name: ${quoteYamlValue(doc.displayName.trim())}`);
   }
 
   lines.push("---", doc.body);
